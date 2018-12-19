@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="custombutton">45dp</dimen>
+    <dimen name="micro_padding">16dp</dimen>
+    <dimen name="default_circle_size">250dp</dimen>
+</resources>
