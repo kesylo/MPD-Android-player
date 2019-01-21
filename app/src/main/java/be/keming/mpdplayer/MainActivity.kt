@@ -6,11 +6,9 @@ import android.support.v7.app.AppCompatActivity
 import android.os.Bundle
 import android.support.v4.content.res.ResourcesCompat
 import android.util.Log
+import android.util.Log.d
+import android.view.Menu
 import android.view.View
-import android.widget.Button
-import android.widget.SeekBar
-import android.widget.TextView
-import android.widget.Toast
 import es.dmoral.toasty.Toasty
 import kotlinx.android.synthetic.main.activity_main.*
 import pl.droidsonroids.gif.GifImageView
@@ -19,61 +17,63 @@ import pl.droidsonroids.gif.GifDrawable
 import java.util.*
 import kotlin.concurrent.thread
 import android.view.MenuInflater
+import android.view.MenuItem
+import android.widget.*
 import java.io.*
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.nio.file.Files.size
+import android.system.Os.socket
+import android.os.StrictMode
 
 
-// Some variables
-    val TAG = "mpd-debug"
 
-// Rand
-val resId = intArrayOf( R.drawable.gif1,R.drawable.gif2, R.drawable.gif3,
-                        R.drawable.gif4, R.drawable.gif5, R.drawable.gif6,
-                        R.drawable.gif7, R.drawable.gif8, R.drawable.gif9,
-                        R.drawable.gif10, R.drawable.gif11, R.drawable.gif12)
-val rand = Random()
 
-// Sockets --------------------------------------------------------------------------------------------------
-//private var mySocket: Socket? = null
 
-// MPD Server Settings ---------------------------------------------------------------------------------------
-private var serverIp: String = "172.30.40.33"
-private var serverPort:Int = 6600
+
+
+
+
+
+
 
 class MainActivity : AppCompatActivity() {
 
     // Variables
-    var isPlaying : Boolean = true
+    var line: String? = null
+    val readingLines = ArrayList<String>()
+    val listSongs = ArrayList<String>()
+    var isButtonClicked = false
 
-    // Set Font
-    private var montserratBoldTypeface : Typeface? = null
-    private var montserratRegularTypeface : Typeface? = null
-
-    // textViews
-    private var songTextView : TextView? = null
-
-    private var titleTextView : TextView? = null
-
-    // imageviews
-    private var playPauseBtn : Button? = null
-    private var gitImgView : GifImageView? = null
+    private var listv: ListView? = null
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        listv = findViewById(R.id.listPlaylist) as ListView
+
+        if (android.os.Build.VERSION.SDK_INT > 9) {
+            val policy = StrictMode.ThreadPolicy.Builder().permitAll().build()
+            StrictMode.setThreadPolicy(policy)
+        }
+
+
+        readingLines.clear()
+        listSongs.clear()
+        runOnUiThread {
+            try {
+                FillListView()
+            }
+            catch (ex:Exception){
+                Toast.makeText(this, "Server ${GlobalClass.IP} is not available", Toast.LENGTH_SHORT).show()
+            }
+        }
 
 
 
 
-
-
-
-        this.playPauseBtn = this.findViewById(R.id.btnPlay)
-        this.gitImgView = this.findViewById(R.id.gifImage)
-
-
-        // change seekbar
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener{
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 volumeText.text = progress.toString()
@@ -83,75 +83,135 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                setServerVolume(seekBar!!.progress)
             }
         })
-
-    // https://www.youtube.com/watch?v=f2sxtl3UU98
-
-        // Set Font
-        initializeRessources ()
-
-        //Set roung imageview
-        //roundImageView(R.drawable.gif1, songImageview)
-
-        // Socket
-        /*thread {
-            try {
-                appSocket = Socket(serverIp, serverPort)
-                printWriter = PrintWriter(appSocket!!.getOutputStream())
-
-            }catch (ioe: IOException){
-                ioe.printStackTrace()
-            }
-        }*/
-
-
     }
 
-    override fun onResume() {
+    /*override fun onResume() {
         super.onResume()
-        GlobalClass.printer?.println(MPD_CURRENT_SONG)
-        GlobalClass.printer?.flush()
-        Log.d(TAG, "" +GlobalClass.printer)
-        musicTiltle.text = GlobalClass.printer?.println(MPD_CURRENT_SONG).toString()
-        GlobalClass.reader = BufferedReader(InputStreamReader(GlobalClass.mySocket!!.getInputStream()))
 
-        GlobalClass.reader.readLine()
+    }
+*/
 
+    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        getMenuInflater().inflate(R.menu.actionbar, menu)
+        return true
     }
 
 
 
-
-
-
+    override fun onOptionsItemSelected(item: MenuItem?): Boolean {
+        when (item!!.itemId) {
+            R.id.settingsbtn -> {
+                openSettings()
+                return true
+            }
+            R.id.refreshbtn -> {
+                refresh()
+                return true
+            }
+        }
+        return super.onOptionsItemSelected(item)
+    }
 
 
 
     // ==========================================================================================================================================
 
-    private fun initializeRessources (){
-        // set regular font to App title
-        this.titleTextView = this.findViewById(R.id.txtAppTitle)
-        this.songTextView = this.findViewById(R.id.musicTiltle)
 
-        // define fonts
-        this.montserratRegularTypeface = ResourcesCompat.getFont(this.applicationContext, R.font.montserrat_regular)
-        this.montserratBoldTypeface = ResourcesCompat.getFont(this.applicationContext, R.font.montserrat_bold)
+    private fun setServerVolume(vol : Int){
+        thread {
+            try {
+                connecToServer()
+                GlobalClass.outToServer.writeBytes("setvol $vol\n")
+            } catch (ex: Exception){
+                ex.printStackTrace()
+            }
+        }
+    }
 
-        // assign font
-        this.titleTextView!!.setTypeface(this.montserratRegularTypeface, Typeface.NORMAL)
-        this.songTextView!!.setTypeface(this.montserratBoldTypeface, Typeface.NORMAL)
-        this.liveStreamTxt!!.setTypeface(this.montserratBoldTypeface, Typeface.NORMAL)
+    fun refresh(){
 
-        // set default gif
-        gitImgView?.setBackgroundResource(R.drawable.radio)
+        runOnUiThread {
+            readingLines.clear()
+            listSongs.clear()
+            runOnUiThread {
+                try {
+                    FillListView()
+                }
+                catch (ex:Exception){
+                    Toast.makeText(this, "Server ${GlobalClass.IP} is not available", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    fun closeConnection() {
+
+        try {
+            GlobalClass.bufreader.close()
+        } finally {
+            try {
+                GlobalClass.outToServer.close()
+                GlobalClass.printer.close()
+            } finally {
+                GlobalClass.mySocket.close()
+            }
+        }
 
     }
 
-    fun onSettingsClick(view: View){
-        openSettings()
+    private fun FillListView (){
+
+            try {
+                thread {
+                connecToServer()
+                // Write line to server
+                GlobalClass.outToServer.writeBytes(MPD_GET_PLAYLIST)
+
+                  /*  // write properly to server
+                    var writer = OutputStreamWriter(GlobalClass.mySocket.getOutputStream())
+                    var prinWriter = PrintWriter(writer)
+                    writer.write(MPD_GET_PLAYLIST)
+                    writer.flush()
+
+                    // read proprely
+                    val br = BufferedReader(InputStreamReader(GlobalClass.mySocket.getInputStream()))
+                    val st = br.readLine()
+                    d("res",st)*/
+
+                while (GlobalClass.bufreader.ready() && ({ line = GlobalClass.bufreader.readLine() }() != null)) {
+                    readingLines.add(line!!)
+                }
+                    closeConnection()
+
+                //GlobalClass.bufreader.close()
+
+                for (i in 0 until readingLines.size) {
+
+                    if (readingLines[i].contains("file", ignoreCase = true)) {
+                        val song = "${readingLines[i].replace("file: ", "")}"
+                        listSongs.add(song)
+                    }
+                }
+            }
+                listv!!.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, listSongs) as ListAdapter?
+
+                listv!!.setOnItemClickListener { parent, view, position, id ->
+                    //Toast.makeText(this, getMusic(position), Toast.LENGTH_SHORT).show()
+                    playThisSong(position)
+                    btnPlay.setBackgroundResource(R.drawable.pause)
+                    textViewCurSong.text = listSongs[position]
+                }
+
+            }catch (ex: Exception){
+                ex.printStackTrace()
+            }
+
     }
+
 
     public fun openSettings(){
         val intent = Intent(this, SettingsActivity::class.java)
@@ -159,100 +219,87 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-/*    private fun roundImageView(image: Int, myImgView:ImageView?){
-        val img = BitmapFactory.decodeResource(resources,image)
-        val round = RoundedBitmapDrawableFactory.create(resources, img)
-        round.cornerRadius = 55f
-        myImgView?.setImageDrawable(round)
-    }*/
 
-
-    // Commands for MPD
-    val MPD_COMMAND_PAUSE = "pause\n"
-    val MPD_CURRENT_SONG = "currentsong\n"
-    val MPD_COMMAND_PREVIOUS = "previous\n"
-    val MPD_COMMAND_NEXT = "next\n"
-    val MPD_COMMAND_STOP = "stop\n"
-
-    fun MPD_COMMAND_PAUSE(pause: Boolean): String {
-        return "pause " + if (pause) "1" else "0"
+    fun getMusic (id:Int): String {
+        val MPD_COMMAND_PLAY = "play $id\n"
+        return MPD_COMMAND_PLAY
     }
 
-    fun onPlayPauseClick(view: View){
-        // set gif to static default
-        gitImgView?.setBackgroundResource(R.drawable.radio)
 
-       /* thread {
-            this.playPauseBtn?.setBackgroundResource(R.drawable.pause)
-            printWriter?.println(MPD_COMMAND_PAUSE(true))
-            printWriter?.flush()
-            printWriter?.close()
-
-        }*/
-
-        // Connect to Server
-        connecToServer()
-    }
-
-    fun connecToServer (){
-        thread {
-            try {
-                GlobalClass.mySocket = Socket(GlobalClass.IP, GlobalClass.port)
-                Log.d(TAG,"socket connected : ${GlobalClass.mySocket!!.isConnected}")
-                if (GlobalClass.mySocket!!.isConnected()){
-                    Log.d(TAG,"socket connected : ${GlobalClass.mySocket!!.isConnected}")
-                }
-                if (GlobalClass.mySocket!!.isClosed()){
-                    Log.d(TAG,"socket closed : ${GlobalClass.mySocket!!.isClosed}")
-                }
-                //GlobalClass.mySocket!!.close()
-                Log.d(TAG,"socket closed : ${GlobalClass.mySocket!!.isClosed}")
-            }catch (ioe: IOException){
-                ioe.printStackTrace()
-            }
-
-            GlobalClass.printer = PrintWriter(GlobalClass.mySocket!!.getOutputStream())
-            GlobalClass.reader = BufferedReader(InputStreamReader(GlobalClass.mySocket!!.getInputStream()))
-
-            GlobalClass.reader.readLine()
-
-        }
-    }
-
-    fun onPreviousClick(view: View){
-        // Change gif randomly
-        var index = rand.nextInt(resId.size - 1 - 0 + 1) + 0
-        gitImgView?.setBackgroundResource(resId[index])
-
-        // Send command
+    fun playThisSong(pos : Int){
         thread {
             try {
                 connecToServer()
-                GlobalClass.printer?.println(MPD_COMMAND_PREVIOUS)
+                GlobalClass.printer?.println(getMusic(pos))
                 GlobalClass.printer?.flush()
-                Log.d(TAG,"previous pressed")
                 GlobalClass.mySocket.close()
-            } catch (ioe: IOException){
-                ioe.printStackTrace()
+            } catch (ex: Exception){
+                ex.printStackTrace()
+            }
+        }
+    }
+
+
+    // Commands for MPD
+    val MPD_STATUS = "status\n"
+    val MPD_COMMAND_PREVIOUS = "previous\n"
+    val MPD_COMMAND_NEXT = "next\n"
+    val MPD_GET_PLAYLIST = "playlistinfo\n"
+
+
+    fun MPD_COMMAND_PAUSE(pause: Boolean): String {
+        return "pause " + if (pause) "1\n" else "0\n"
+    }
+
+    fun onPlayPauseClick(view: View){
+       if (btnPlay.id != R.drawable.play){
+           isButtonClicked = !isButtonClicked
+           btnPlay.setBackgroundResource(if (isButtonClicked) R.drawable.pause else R.drawable.play)
+           thread {
+               try {
+                   connecToServer()
+                   // Write line to server
+                   GlobalClass.outToServer.writeBytes(MPD_COMMAND_PAUSE(!isButtonClicked))
+               } catch (ex: Exception){
+                   ex.printStackTrace()
+               }
+           }
+       }
+    }
+
+    fun connecToServer (){
+
+            GlobalClass.mySocket = Socket(GlobalClass.IP, GlobalClass.port)
+            GlobalClass.printer = PrintWriter(GlobalClass.mySocket!!.getOutputStream())
+
+            // Create output stream attached to socket
+            GlobalClass.outToServer = DataOutputStream(GlobalClass.mySocket.getOutputStream())
+
+            // Create (buffered) input stream attached to socket
+            GlobalClass.bufreader = BufferedReader(InputStreamReader(GlobalClass.mySocket.getInputStream()))
+    }
+
+
+    fun onPreviousClick(view: View){
+        thread {
+            try {
+                connecToServer()
+                // Write line to server
+                GlobalClass.outToServer.writeBytes(MPD_COMMAND_PREVIOUS)
+            } catch (ex: Exception){
+                ex.printStackTrace()
             }
         }
     }
 
     fun onNextClick(view: View){
-        // Change gif randomly
-        var index = rand.nextInt(resId.size - 1 - 0 + 1) + 0
-        gitImgView?.setBackgroundResource(resId[index])
-
-        // Send command
         thread {
             try {
                 connecToServer()
-                GlobalClass.printer?.println(MPD_COMMAND_NEXT)
-                GlobalClass.printer?.flush()
-                Log.d(TAG,"next pressed")
-                GlobalClass.mySocket.close()
-            } catch (ioe: IOException){
-                ioe.printStackTrace()
+                // Write line to server
+                GlobalClass.outToServer.writeBytes(MPD_COMMAND_NEXT)
+            } catch (ex: Exception){
+                ex.printStackTrace()
             }
         }
     }
